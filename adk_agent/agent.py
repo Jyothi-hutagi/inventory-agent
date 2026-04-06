@@ -1,17 +1,12 @@
-"""
-Root Inventory Intelligence Agent
-Cloud Run compatible — credentials via env var or Workload Identity
-"""
 import os
 from dotenv import load_dotenv
 
-# Load .env only in local dev (Cloud Run uses real env vars)
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 if os.path.exists(_env_path):
     load_dotenv(dotenv_path=_env_path, override=True)
 
 from google.adk.agents import Agent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioClientConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
 from adk_agent.sub_agents.report_agent import report_agent
 
 root_agent = Agent(
@@ -41,8 +36,8 @@ BEHAVIOR RULES:
     sub_agents=[report_agent],
     tools=[
         MCPToolset(
-            connection_params=StdioClientConnectionParams(
-                command="python3.11",
+            connection_params=StdioServerParameters(
+                command="python3",
                 args=["-m", "mcp_server.http_server"],
                 env={
                     "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""),
