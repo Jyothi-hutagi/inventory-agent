@@ -100,11 +100,12 @@ gcloud run deploy $FRONTEND_SERVICE \
   --region $REGION \
   --platform managed \
   --allow-unauthenticated \
-  --memory 512Mi \
+  --memory 1Gi \
   --cpu 1 \
-  --set-env-vars "VITE_API_URL=${BACKEND_URL}" \
-  --build-env-vars "VITE_API_URL=${BACKEND_URL}" \
+  --timeout 120 \
+  --set-build-env-vars "VITE_API_URL=${BACKEND_URL}" \
   --quiet
+
 
 FRONTEND_URL=$(gcloud run services describe $FRONTEND_SERVICE \
   --region $REGION \

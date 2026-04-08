@@ -21,7 +21,14 @@ with open(TOOLS_FILE) as f:
     config = yaml.safe_load(f)
 
 project_id = config["sources"]["inventory_bq"]["project"]
-bq_client = bigquery.Client(project=project_id)
+bq_client = None  # Lazy initialization
+
+def get_bq_client():
+    """Get or create BigQuery client."""
+    global bq_client
+    if bq_client is None:
+        bq_client = bigquery.Client(project=project_id)
+    return bq_client
 
 @app.get("/mcp")
 async def list_tools():
@@ -67,7 +74,7 @@ async def call_tool(request: dict[str, Any]):
         sql = sql.replace(f"@{param_name}", f"'{param_value}'")
     
     try:
-        query_job = bq_client.query(sql)
+        query_job = get_bq_client().query(sql)  # Initialize here
         results = query_job.result()
         
         rows = [dict(row) for row in results]

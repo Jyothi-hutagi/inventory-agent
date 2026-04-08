@@ -1,13 +1,10 @@
 """
 FastAPI API Layer for Inventory Intelligence Agent
-Cloud Run compatible — spawns MCP server as background process
+Cloud Run compatible — McpToolset manages MCP subprocess lifecycle automatically.
 """
 import os
 import sys
 import uuid
-import subprocess
-import time
-import signal
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -18,39 +15,26 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-# Add project root to path
+# Add project root to path so adk_agent package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from adk_agent.agent import root_agent
+from adk_agent.agent import create_agent, AGENT_NAME
 
 APP_NAME = "inventory-intelligence-agent"
 session_service = InMemorySessionService()
+
+# Built once at startup
+agent = create_agent()
 runner = Runner(
-    agent=root_agent,
+    agent=agent,
     app_name=APP_NAME,
     session_service=session_service,
 )
 
-mcp_process = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mcp_process
-
-    # Start MCP server as background subprocess on port 5000
-    mcp_process = subprocess.Popen(
-        [sys.executable, "-m", "mcp_server.http_server"],
-        env={**os.environ},
-    )
-    time.sleep(2)  # Give MCP server time to start
-    print("🔧 MCP server started (pid:", mcp_process.pid, ")")
     print("🚀 Inventory Intelligence Agent API started")
-
     yield
-
-    # Shutdown MCP server
-    if mcp_process:
-        mcp_process.send_signal(signal.SIGTERM)
-        mcp_process.wait()
     print("🛑 Shutting down")
 
 
@@ -81,18 +65,18 @@ class AskResponse(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "agent": root_agent.name}
+    return {"status": "ok", "agent": AGENT_NAME}
 
 
 @app.get("/samples")
 def sample_queries():
     return [
-        {"label": "📦 Inventory Overview",   "query": "Give me an overview of our current inventory status"},
-        {"label": "⚠️ Low Stock Alert",      "query": "Which raw materials are below reorder level?"},
-        {"label": "🔩 Metals Stock",         "query": "Show me the stock status for all metal materials"},
-        {"label": "🚚 Pending Orders",       "query": "What purchase orders are pending or delayed?"},
-        {"label": "🔥 Fast-Moving Stock",    "query": "What are our top 5 most consumed materials this month?"},
-        {"label": "🏭 Warehouse Breakdown",  "query": "Give me a breakdown of stock value by warehouse"},
+        {"label": "📦 Inventory Overview",  "query": "Give me an overview of our current inventory status"},
+        {"label": "⚠️ Low Stock Alert",     "query": "Which raw materials are below reorder level?"},
+        {"label": "🔩 Metals Stock",        "query": "Show me the stock status for all metal materials"},
+        {"label": "🚚 Pending Orders",      "query": "What purchase orders are pending or delayed?"},
+        {"label": "🔥 Fast-Moving Stock",   "query": "What are our top 5 most consumed materials this month?"},
+        {"label": "🏭 Warehouse Breakdown", "query": "Give me a breakdown of stock value by warehouse"},
     ]
 
 
@@ -110,7 +94,7 @@ async def ask(req: AskRequest):
 
     message = types.Content(
         role="user",
-        parts=[types.Part(text=req.question)]
+        parts=[types.Part(text=req.question)],
     )
 
     answer_parts = []
@@ -131,3 +115,8 @@ async def ask(req: AskRequest):
         session_id=session_id,
         question=req.question,
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
