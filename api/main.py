@@ -1,41 +1,61 @@
 """
 FastAPI API Layer for Inventory Intelligence Agent
-Cloud Run compatible — McpToolset manages MCP subprocess lifecycle automatically.
 """
 import os
 import sys
 import uuid
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.genai import types
-
-# Add project root to path so adk_agent package is importable
+# Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from adk_agent.agent import create_agent, AGENT_NAME
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 APP_NAME = "inventory-intelligence-agent"
-session_service = InMemorySessionService()
+AGENT_NAME = "inventory_intelligence_agent"
 
-# Built once at startup
-agent = create_agent()
-runner = Runner(
-    agent=agent,
-    app_name=APP_NAME,
-    session_service=session_service,
-)
+_runner = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Inventory Intelligence Agent API started")
+    global _runner
+
+    try:
+        logger.info("Importing ADK dependencies...")
+        from google.adk.runners import Runner
+        from google.adk.sessions import InMemorySessionService
+        from adk_agent.agent import create_agent
+
+        logger.info("Creating agent...")
+        agent = create_agent()
+
+        logger.info("Creating session service...")
+        session_service = InMemorySessionService()
+
+        logger.info("Creating runner...")
+        _runner = Runner(
+            agent=agent,
+            app_name=APP_NAME,
+            session_service=session_service,
+        )
+        # Store session_service on runner for use in ask()
+        _runner._session_service_ref = session_service
+
+        logger.info("🚀 Inventory Intelligence Agent API started")
+
+    except Exception as e:
+        logger.exception(f"❌ Failed to start agent: {e}")
+        raise
+
     yield
-    print("🛑 Shutting down")
+    logger.info("🛑 Shutting down")
 
 
 app = FastAPI(
@@ -82,9 +102,15 @@ def sample_queries():
 
 @app.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest):
+    from google.genai import types
+
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
+    if _runner is None:
+        raise HTTPException(status_code=503, detail="Agent not ready yet")
+
+    session_service = _runner._session_service_ref
     session_id = str(uuid.uuid4())
     await session_service.create_session(
         app_name=APP_NAME,
@@ -98,7 +124,7 @@ async def ask(req: AskRequest):
     )
 
     answer_parts = []
-    async for event in runner.run_async(
+    async for event in _runner.run_async(
         user_id="user",
         session_id=session_id,
         new_message=message,
@@ -119,4 +145,4 @@ async def ask(req: AskRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
