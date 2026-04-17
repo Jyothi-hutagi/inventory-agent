@@ -6,11 +6,11 @@ RUN npm ci
 
 COPY . .
 
-# VITE_API_URL will be injected at build time via --build-arg
-ARG VITE_API_URL
+# Fallback to deployed backend URL if build arg is not provided
+ARG VITE_API_URL=https://inventory-agent-api-wtfuivteea-el.a.run.app
 ENV VITE_API_URL=$VITE_API_URL
 
-RUN npm run build
+RUN node ./node_modules/vite/bin/vite.js build
 
 # Serve with nginx
 FROM nginx:alpine

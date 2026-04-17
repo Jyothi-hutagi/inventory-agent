@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import styled, { keyframes, createGlobalStyle } from 'styled-components'
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_URL || 'https://inventory-agent-api-wtfuivteea-el.a.run.app'
 
 // ── Animations ──────────────────────────────────────────────────────────────
 const fadeUp = keyframes`from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}`
@@ -277,6 +277,50 @@ const SendBtn = styled.button`
   &:hover:not(:disabled) { background: #ffba42; transform: scale(1.04); }
 `
 
+const VoiceBtn = styled.button`
+  width: 48px; height: 48px;
+  border-radius: 6px;
+  border: 1px solid ${p => p.$active ? 'var(--amber)' : 'var(--border-bright)'};
+  background: ${p => p.$active ? 'rgba(245,166,35,0.14)' : 'var(--bg-2)'};
+  color: ${p => p.$active ? 'var(--amber)' : 'var(--text-secondary)'};
+  font-size: 18px;
+  cursor: ${p => p.disabled ? 'not-allowed' : 'pointer'};
+  transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+
+  &:hover:not(:disabled) {
+    border-color: var(--cyan-dim);
+    color: var(--text-primary);
+  }
+`
+
+const BubbleRow = styled.div`
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 72%;
+  ${p => p.$user && 'flex-direction: row-reverse;'}
+`
+
+const SpeakBtn = styled.button`
+  width: 30px; height: 30px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-top: 6px;
+  transition: all 0.15s;
+
+  &:hover {
+    border-color: var(--cyan-dim);
+    color: var(--text-primary);
+  }
+`
+
 const Hint = styled.div`
   margin-top: 8px;
   font-family: var(--font-mono);
@@ -300,16 +344,58 @@ export default function App() {
   const [input, setInput]           = useState('')
   const [loading, setLoading]       = useState(false)
   const [sessionId, setSessionId]   = useState(null)
+  const [isListening, setIsListening] = useState(false)
+  const [voiceInputSupported, setVoiceInputSupported] = useState(false)
+  const [voiceOutputSupported, setVoiceOutputSupported] = useState(false)
   const bottomRef                   = useRef(null)
   const textareaRef                 = useRef(null)
+  const recognitionRef              = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    const ttsAvailable = typeof window.speechSynthesis !== 'undefined'
+
+    if (ttsAvailable) setVoiceOutputSupported(true)
+
+    if (!SpeechRecognition) return
+
+    setVoiceInputSupported(true)
+    const recognition = new SpeechRecognition()
+    recognition.lang = 'en-US'
+    recognition.interimResults = true
+    recognition.continuous = false
+
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map((result) => result[0]?.transcript || '')
+        .join('')
+        .trim()
+
+      if (transcript) setInput(transcript)
+    }
+
+    recognition.onend = () => setIsListening(false)
+    recognition.onerror = () => setIsListening(false)
+    recognitionRef.current = recognition
+
+    return () => {
+      recognition.stop()
+      if (window.speechSynthesis) window.speechSynthesis.cancel()
+    }
+  }, [])
+
   const sendMessage = async (text) => {
     const question = (text || input).trim()
     if (!question || loading) return
+
+    if (recognitionRef.current && isListening) {
+      recognitionRef.current.stop()
+      setIsListening(false)
+    }
 
     setMessages(m => [...m, { role: 'user', text: question }])
     setInput('')
@@ -337,6 +423,35 @@ export default function App() {
   }
 
   const handleSample = (q) => sendMessage(q)
+
+  const toggleVoiceInput = () => {
+    if (!voiceInputSupported || loading) return
+    const recognition = recognitionRef.current
+    if (!recognition) return
+
+    if (isListening) {
+      recognition.stop()
+      setIsListening(false)
+      return
+    }
+
+    try {
+      recognition.start()
+      setIsListening(true)
+    } catch {
+      setIsListening(false)
+    }
+  }
+
+  const speakText = (text) => {
+    if (!voiceOutputSupported || !text) return
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.lang = 'en-US'
+    utterance.rate = 1
+    utterance.pitch = 1
+    window.speechSynthesis.speak(utterance)
+  }
 
   const clearChat = () => { setMessages([]); setSessionId(null) }
 
@@ -415,7 +530,14 @@ export default function App() {
                 <Avatar $user={m.role === 'user'}>
                   {m.role === 'user' ? '👤' : '🤖'}
                 </Avatar>
-                <Bubble $user={m.role === 'user'}>{m.text}</Bubble>
+                <BubbleRow $user={m.role === 'user'}>
+                  <Bubble $user={m.role === 'user'}>{m.text}</Bubble>
+                  {m.role === 'agent' && voiceOutputSupported && (
+                    <SpeakBtn onClick={() => speakText(m.text)} title="Read aloud">
+                      🔊
+                    </SpeakBtn>
+                  )}
+                </BubbleRow>
               </Msg>
             ))
           )}
@@ -442,11 +564,21 @@ export default function App() {
               rows={1}
               disabled={loading}
             />
+            <VoiceBtn
+              onClick={toggleVoiceInput}
+              disabled={!voiceInputSupported || loading}
+              $active={isListening}
+              title={voiceInputSupported ? (isListening ? 'Stop voice input' : 'Start voice input') : 'Voice input not supported in this browser'}
+            >
+              {isListening ? '⏹' : '🎙️'}
+            </VoiceBtn>
             <SendBtn onClick={() => sendMessage()} disabled={loading || !input.trim()}>
               ➤
             </SendBtn>
           </InputRow>
-          <Hint>ENTER to send · SHIFT+ENTER for new line · session: {sessionId ? sessionId.slice(0,8)+'…' : 'new'}</Hint>
+          <Hint>
+            ENTER to send · SHIFT+ENTER for new line · {isListening ? 'listening...' : 'voice ready'} · session: {sessionId ? sessionId.slice(0,8)+'…' : 'new'}
+          </Hint>
         </InputBar>
       </ChatArea>
     </Shell>

@@ -20,6 +20,7 @@ gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
   secretmanager.googleapis.com \
+  aiplatform.googleapis.com \
   bigquery.googleapis.com \
   artifactregistry.googleapis.com \
   --quiet
@@ -66,6 +67,11 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
   --role="roles/bigquery.user" \
   --quiet
 
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${CLOUD_RUN_SA}" \
+  --role="roles/aiplatform.user" \
+  --quiet
+
 echo "✅ IAM permissions set."
 
 # ── STEP 3: Deploy Backend ────────────────────────────────────
@@ -81,7 +87,7 @@ gcloud run deploy $BACKEND_SERVICE \
   --timeout 120 \
   --concurrency 10 \
   --set-secrets "GOOGLE_APPLICATION_CREDENTIALS=gcp-sa-key:latest" \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true" \
   --quiet
 
 BACKEND_URL=$(gcloud run services describe $BACKEND_SERVICE \

@@ -1,15 +1,17 @@
 """
-FastAPI API Layer for Inventory Intelligence Agent
+FastAPI API Layer for Inventory Intelligence Agent (Cloud Run Ready)
 """
+
 import os
 import sys
 import uuid
 import logging
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import google.adk
+print("ADK VERSION:", google.adk.__version__)
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,48 +22,49 @@ logger = logging.getLogger(__name__)
 APP_NAME = "inventory-intelligence-agent"
 AGENT_NAME = "inventory_intelligence_agent"
 
+# 🔥 Lazy-loaded runner (IMPORTANT for Cloud Run)
 _runner = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+def get_runner():
+    """
+    Lazy initialization of ADK Runner.
+    Prevents Cloud Run startup timeout.
+    """
     global _runner
 
-    try:
-        logger.info("Importing ADK dependencies...")
-        from google.adk.runners import Runner
-        from google.adk.sessions import InMemorySessionService
-        from adk_agent.agent import create_agent
+    if _runner is None:
+        logger.info("⚡ Initializing agent (lazy load)...")
 
-        logger.info("Creating agent...")
-        agent = create_agent()
+        try:
+            from google.adk.runners import Runner
+            from google.adk.sessions import InMemorySessionService
+            from adk_agent.agent import create_agent
 
-        logger.info("Creating session service...")
-        session_service = InMemorySessionService()
+            agent = create_agent()
+            session_service = InMemorySessionService()
 
-        logger.info("Creating runner...")
-        _runner = Runner(
-            agent=agent,
-            app_name=APP_NAME,
-            session_service=session_service,
-        )
-        # Store session_service on runner for use in ask()
-        _runner._session_service_ref = session_service
+            _runner = Runner(
+                agent=agent,
+                app_name=APP_NAME,
+                session_service=session_service,
+            )
 
-        logger.info("🚀 Inventory Intelligence Agent API started")
+            _runner._session_service_ref = session_service
 
-    except Exception as e:
-        logger.exception(f"❌ Failed to start agent: {e}")
-        raise
+            logger.info("✅ Agent initialized successfully")
 
-    yield
-    logger.info("🛑 Shutting down")
+        except Exception as e:
+            logger.exception("❌ Failed to initialize agent")
+            raise RuntimeError(f"Agent initialization failed: {str(e)}")
+
+    return _runner
 
 
+# 🚀 FastAPI app (NO lifespan → faster startup)
 app = FastAPI(
     title="Inventory Intelligence Agent",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -71,6 +74,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ─────────────────────────────
+# Request / Response Models
+# ─────────────────────────────
 
 class AskRequest(BaseModel):
     question: str
@@ -83,10 +90,18 @@ class AskResponse(BaseModel):
     question: str
 
 
+# ─────────────────────────────
+# Health Check
+# ─────────────────────────────
+
 @app.get("/health")
 def health():
     return {"status": "ok", "agent": AGENT_NAME}
 
+
+# ─────────────────────────────
+# Sample Queries
+# ─────────────────────────────
 
 @app.get("/samples")
 def sample_queries():
@@ -100,6 +115,10 @@ def sample_queries():
     ]
 
 
+# ─────────────────────────────
+# Main API
+# ─────────────────────────────
+
 @app.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest):
     from google.genai import types
@@ -107,42 +126,56 @@ async def ask(req: AskRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
-    if _runner is None:
-        raise HTTPException(status_code=503, detail="Agent not ready yet")
+    try:
+        runner = get_runner()
+        session_service = runner._session_service_ref
 
-    session_service = _runner._session_service_ref
-    session_id = str(uuid.uuid4())
-    await session_service.create_session(
-        app_name=APP_NAME,
-        user_id="user",
-        session_id=session_id,
-    )
+        session_id = str(uuid.uuid4())
 
-    message = types.Content(
-        role="user",
-        parts=[types.Part(text=req.question)],
-    )
+        await session_service.create_session(
+            app_name=APP_NAME,
+            user_id="user",
+            session_id=session_id,
+        )
 
-    answer_parts = []
-    async for event in _runner.run_async(
-        user_id="user",
-        session_id=session_id,
-        new_message=message,
-    ):
-        if event.is_final_response() and event.content:
-            for part in event.content.parts:
-                if hasattr(part, "text") and part.text:
-                    answer_parts.append(part.text)
+        message = types.Content(
+            role="user",
+            parts=[types.Part(text=req.question)],
+        )
 
-    answer = "\n".join(answer_parts).strip() or "No response generated."
+        answer_parts = []
 
-    return AskResponse(
-        answer=answer,
-        session_id=session_id,
-        question=req.question,
-    )
+        async for event in runner.run_async(
+            user_id="user",
+            session_id=session_id,
+            new_message=message,
+        ):
+            if event.is_final_response() and event.content:
+                for part in event.content.parts:
+                    if hasattr(part, "text") and part.text:
+                        answer_parts.append(part.text)
 
+        answer = "\n".join(answer_parts).strip() or "No response generated."
+
+        return AskResponse(
+            answer=answer,
+            session_id=session_id,
+            question=req.question,
+        )
+
+    except Exception as e:
+        logger.exception("❌ Error processing request")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────
+# Local Run (for testing)
+# ─────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"🚀 Starting server on port {port}")
+
+    uvicorn.run(app, host="0.0.0.0", port=port)
