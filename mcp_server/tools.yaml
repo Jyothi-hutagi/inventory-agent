@@ -11,11 +11,21 @@ tools:
       Returns raw materials whose current stock is at or below the reorder level.
       Use this when the user asks about low stock, materials to reorder, or stock alerts.
     statement: |
+      WITH open_po AS (
+        SELECT
+          material_id,
+          SUM(qty_ordered - IFNULL(qty_received, 0)) AS open_po_qty
+        FROM `jyothiapikey1.inventory_db.purchase_orders`
+        WHERE status IN ('Pending', 'In Transit', 'Delayed')
+        GROUP BY material_id
+      )
       SELECT
         m.material_id,
         m.name,
         m.category,
         m.current_stock,
+        IFNULL(op.open_po_qty, 0) AS open_po_qty,
+        (m.current_stock + IFNULL(op.open_po_qty, 0)) AS total_available_qty,
         m.reorder_level,
         m.unit,
         m.unit_cost,
@@ -24,8 +34,9 @@ tools:
         s.avg_lead_days
       FROM `jyothiapikey1.inventory_db.raw_materials` m
       JOIN `jyothiapikey1.inventory_db.suppliers` s USING (supplier_id)
-      WHERE m.current_stock <= m.reorder_level
-      ORDER BY (m.current_stock / m.reorder_level) ASC
+      LEFT JOIN open_po op USING (material_id)
+      WHERE (m.current_stock + IFNULL(op.open_po_qty, 0)) <= m.reorder_level
+      ORDER BY ((m.current_stock + IFNULL(op.open_po_qty, 0)) / m.reorder_level) ASC
 
   get_inventory_summary:
     kind: bigquery-sql
@@ -34,14 +45,38 @@ tools:
       Returns a summary of total inventory value, count of materials, and how many
       are critically low. Use for overview or inventory status queries.
     statement: |
+      WITH open_po AS (
+        SELECT
+          material_id,
+          SUM(qty_ordered - IFNULL(qty_received, 0)) AS open_po_qty
+        FROM `jyothiapikey1.inventory_db.purchase_orders`
+        WHERE status IN ('Pending', 'In Transit', 'Delayed')
+        GROUP BY material_id
+      ),
+      material_totals AS (
+        SELECT
+          m.material_id,
+          m.current_stock,
+          m.reorder_level,
+          m.unit_cost,
+          m.warehouse,
+          m.category,
+          IFNULL(op.open_po_qty, 0) AS open_po_qty,
+          (m.current_stock + IFNULL(op.open_po_qty, 0)) AS total_available_qty
+        FROM `jyothiapikey1.inventory_db.raw_materials` m
+        LEFT JOIN open_po op USING (material_id)
+      )
       SELECT
         COUNT(*) AS total_materials,
         ROUND(SUM(current_stock * unit_cost), 2) AS total_inventory_value_inr,
-        COUNTIF(current_stock <= reorder_level) AS critical_low_count,
-        COUNTIF(current_stock <= reorder_level * 0.5) AS danger_count,
+        ROUND(SUM(current_stock), 2) AS total_current_stock_qty,
+        ROUND(SUM(open_po_qty), 2) AS total_open_po_qty,
+        ROUND(SUM(total_available_qty), 2) AS total_available_qty,
+        COUNTIF(total_available_qty <= reorder_level) AS critical_low_count,
+        COUNTIF(total_available_qty <= reorder_level * 0.5) AS danger_count,
         COUNT(DISTINCT warehouse) AS warehouse_count,
         COUNT(DISTINCT category) AS category_count
-      FROM `jyothiapikey1.inventory_db.raw_materials`
+      FROM material_totals
 
   get_materials_by_category:
     kind: bigquery-sql
@@ -54,10 +89,20 @@ tools:
         type: string
         description: "Material category name, e.g. Metals"
     statement: |
+      WITH open_po AS (
+        SELECT
+          material_id,
+          SUM(qty_ordered - IFNULL(qty_received, 0)) AS open_po_qty
+        FROM `jyothiapikey1.inventory_db.purchase_orders`
+        WHERE status IN ('Pending', 'In Transit', 'Delayed')
+        GROUP BY material_id
+      )
       SELECT
         m.material_id,
         m.name,
         m.current_stock,
+        IFNULL(op.open_po_qty, 0) AS open_po_qty,
+        (m.current_stock + IFNULL(op.open_po_qty, 0)) AS total_available_qty,
         m.reorder_level,
         m.unit,
         m.unit_cost,
@@ -66,8 +111,9 @@ tools:
         s.name AS supplier_name
       FROM `jyothiapikey1.inventory_db.raw_materials` m
       JOIN `jyothiapikey1.inventory_db.suppliers` s USING (supplier_id)
+      LEFT JOIN open_po op USING (material_id)
       WHERE LOWER(m.category) = LOWER(@category)
-      ORDER BY m.current_stock DESC
+      ORDER BY total_available_qty DESC
 
   get_pending_purchase_orders:
     kind: bigquery-sql
@@ -92,6 +138,23 @@ tools:
       WHERE po.status IN ('Pending', 'In Transit', 'Delayed')
       ORDER BY po.expected_date ASC
 
+  get_supplier_locations:
+    kind: bigquery-sql
+    source: inventory_bq
+    description: >
+      Returns supplier details with their city locations.
+      Use when the user asks where suppliers are located or asks for supplier city list.
+    statement: |
+      SELECT
+        supplier_id,
+        name AS supplier_name,
+        city,
+        rating,
+        avg_lead_days,
+        is_active
+      FROM `jyothiapikey1.inventory_db.suppliers`
+      ORDER BY city ASC, supplier_name ASC
+
   get_top_consumed_materials:
     kind: bigquery-sql
     source: inventory_bq
@@ -109,11 +172,14 @@ tools:
         SUM(c.qty_consumed) AS total_consumed,
         m.unit,
         m.current_stock,
+        s.name AS supplier_name,
+        s.city AS supplier_city,
         ROUND(SUM(c.qty_consumed) * m.unit_cost, 2) AS consumption_value_inr
       FROM `jyothiapikey1.inventory_db.consumption_log` c
       JOIN `jyothiapikey1.inventory_db.raw_materials` m USING (material_id)
+      JOIN `jyothiapikey1.inventory_db.suppliers` s USING (supplier_id)
       WHERE c.log_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-      GROUP BY m.name, m.category, m.unit, m.current_stock, m.unit_cost
+      GROUP BY m.name, m.category, m.unit, m.current_stock, m.unit_cost, s.name, s.city
       ORDER BY total_consumed DESC
       LIMIT @limit
 

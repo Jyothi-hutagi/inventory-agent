@@ -106,3 +106,32 @@ After deploy.sh completes, note:
 - **Backend**: FastAPI + Uvicorn
 - **Frontend**: React + Vite
 - **Deployment**: Google Cloud Run
+
+## What Was Completed
+
+### Deployment and Cloud Run Fixes
+- Backend deployment was stabilized and is running on Cloud Run.
+- Frontend Cloud Run build failures were fixed by updating the frontend Docker build command to run Vite directly.
+- Frontend runtime API connectivity was fixed by ensuring `VITE_API_URL` fallback points to deployed backend URL.
+- Cloud Run environment configuration was updated for Vertex AI mode (`GOOGLE_GENAI_USE_VERTEXAI=true`) to avoid Gemini API-key runtime failures.
+- Deployment script was improved to include Vertex AI prerequisites:
+  - `aiplatform.googleapis.com` API enablement
+  - `roles/aiplatform.user` IAM role binding for runtime service account
+
+### Backend Agent Reliability Fixes
+- ADK MCP import compatibility was implemented in `adk_agent/agent.py` to support multiple ADK versions:
+  - `McpToolset` and `MCPToolset` class name variants
+  - `StdioConnectionParams` and direct `StdioServerParameters` connection variants
+- This removed the runtime initialization failure (`McpToolset not found`) seen after deployment.
+
+### Frontend Feature Enhancements
+- Voice features were added to chat UI:
+  - Voice input (speech-to-text) mic button
+  - Voice output (text-to-speech) speaker button per agent message
+  - Browser capability fallbacks for unsupported speech APIs
+- Chat UX remains the same while adding optional voice controls.
+
+### Security and Operations Notes
+- Service account key usage path issue was diagnosed and corrected (path vs JSON content).
+- Secret/env type mismatch in Cloud Run configuration was identified with corrective deployment guidance.
+- **Important**: service account key was exposed during troubleshooting and should be rotated/revoked in GCP.
